@@ -79,7 +79,7 @@ jobs:
               const repository = `${owner}/${repo}`;
               const hold = reason => { core.notice(`Held: ${reason}`); return { outcome: 'held', reason }; };
               const terminal = pull => pull.merged || pull.state === 'closed';
-              const finish = pull => ({ outcome: pull.merged ? 'merged' : 'closed', number: pull.number });
+              const finish = pull => ({ outcome: pull.merged ? 'already-merged' : 'closed', number: pull.number });
               const required = JSON.parse(config.requiredChecks);
               if (owner !== 'Oceanswave' || !Array.isArray(required) || !required.length ||
                   required.some(check => !check || typeof check.name !== 'string' || !check.name ||
