@@ -96,7 +96,8 @@ async function autoMerge({ github, context, core, config }) {
     }
     for (const check of checks) {
       // Only this job can be pending; every other CI/status context must pass.
-      const own = (check.name === 'Shared auto-merge' || check.name?.endsWith(' / Shared auto-merge')) &&
+      const own = check.checkSuite?.app?.databaseId === 15368 &&
+        (check.name === 'Shared auto-merge' || check.name?.endsWith(' / Shared auto-merge')) &&
         check.detailsUrl?.startsWith(`https://github.com/${repository}/actions/runs/${context.runId}/`);
       if (own) continue;
       if (check.name && (check.status !== 'COMPLETED' || !['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion))) return hold(`check ${check.name} is incomplete or failed`);

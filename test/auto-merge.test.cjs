@@ -86,7 +86,7 @@ test('Protected merge uses exact verified SHA and no bypass', async () => { cons
 test('Protected merge rejection remains a failure', async () => { const h = harness({ mergeResponse: { merged: false, message: 'Required checks unmet' } }); await assert.rejects(h.run(), /Required checks/); });
 test('Protected merge transport error remains a failure', async () => { const h = harness({ mergeError: new Error('merge denied') }); await assert.rejects(h.run(), /merge denied/); });
 test('Already armed eligible PR uses exact-head protected merge', async () => { const h = harness({ pull: { ...pull, auto_merge: {} } }); assert.equal((await h.run()).outcome, 'merged'); assert.equal(h.calls.find(Array.isArray)[1].sha, sha); });
-test('Own pending controller check is excluded by current run URL', async () => { const h = harness({ checks: [check, { name: 'queue / Shared auto-merge', status: 'IN_PROGRESS', detailsUrl: 'https://github.com/Oceanswave/test/actions/runs/42/job/7' }] }); assert.equal((await h.run()).outcome, 'merged'); });
+test('Own pending controller check is excluded by current run URL', async () => { const h = harness({ checks: [check, { name: 'queue / Shared auto-merge', status: 'IN_PROGRESS', checkSuite: { app: { databaseId: 15368 } }, detailsUrl: 'https://github.com/Oceanswave/test/actions/runs/42/job/7' }] }); assert.equal((await h.run()).outcome, 'merged'); });
 test('Other run controller check is not ignored', async () => { const h = harness({ checks: [check, { name: 'queue / Shared auto-merge', status: 'IN_PROGRESS', detailsUrl: 'https://github.com/Oceanswave/test/actions/runs/43/job/7' }] }); assert.equal((await h.run()).outcome, 'held'); noWrites(h.calls); });
 test('Review pagination includes later unresolved thread', async () => { const h = harness({ reviewPages: [{ nodes: [], pageInfo: { hasNextPage: true, endCursor: 'page2' } }, { nodes: [{ isResolved: false }], pageInfo: { hasNextPage: false } }] }); assert.equal((await h.run()).outcome, 'held'); noWrites(h.calls); });
 test('Check pagination includes required check on later page', async () => { const h = harness({ checkPages: [{ nodes: [], pageInfo: { hasNextPage: true, endCursor: 'page2' } }, { nodes: [check], pageInfo: { hasNextPage: false } }] }); assert.equal((await h.run()).outcome, 'merged'); });
@@ -119,4 +119,10 @@ for (const [name, conclusion, allowSkipped, appId, outcome] of [
 test('Reject ambiguous conditional-check configuration', async () => {
   const h = harness({ config: { requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368, allowSkipped: 'true' }]) } });
   await assert.rejects(h.run(), /explicit checks/); noWrites(h.calls);
+});
+
+test('A check from another app cannot impersonate the running controller', async () => {
+  const h = harness({ checks: [check, { name: 'queue / Shared auto-merge', status: 'IN_PROGRESS',
+    checkSuite: { app: { databaseId: 1 } }, detailsUrl: 'https://github.com/Oceanswave/test/actions/runs/42/job/7' }] });
+  assert.equal((await h.run()).outcome, 'held'); noWrites(h.calls);
 });
