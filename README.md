@@ -22,6 +22,16 @@ that existing token as `secrets.token`, with `expected-token-actor`. Never use
 `secrets: inherit`. The caller must retain its existing permissions and delivery
 event contract; adoption does not authorize adding credentials or permissions.
 
+For a caller whose existing maintainer token cannot read private CI metadata,
+`use-job-token-for-policy-read: true` uses the ephemeral job token for all PR,
+review and check reads. The existing named token still supplies actor validation
+and the exact-head merge. The caller must explicitly grant its job `contents:
+read`, `pull-requests: read`, `checks: read` and `statuses: read`; adding these
+permissions requires the owner's scoped approval. This option adds no stored
+credential, does not expand the maintainer token, and never falls back to it
+when a policy read is denied. The default preserves the existing single-client
+contract. Private eligibility needs both check-run and commit-status read access.
+
 The helper reads live PR, reviews, discussion resolution and current-head check
 metadata. It holds drafts, requested reviews, changes requests, unresolved
 threads, forks, stale heads, unavailable mergeability, and incomplete or failed

@@ -3,7 +3,10 @@ const { resolve } = require('node:path');
 const root = resolve(__dirname, '..');
 const source = readFileSync(resolve(root, 'src/auto-merge.cjs'), 'utf8').replace(/module\.exports = \{ autoMerge \};\s*$/, '');
 const script = source + `
-const result = await autoMerge({ github, context, core, config: {
+const policyGithub = process.env.USE_JOB_TOKEN_FOR_POLICY_READ === 'true'
+  ? new github.constructor({ auth: process.env.JOB_TOKEN, baseUrl: process.env.GITHUB_API_URL })
+  : github;
+const result = await autoMerge({ github, policyGithub, context, core, config: {
   pullNumber: process.env.PULL_NUMBER,
   expectedHead: process.env.EXPECTED_HEAD,
   headBranch: process.env.HEAD_BRANCH,
@@ -50,6 +53,9 @@ on:
       require-dependabot:
         type: boolean
         default: false
+      use-job-token-for-policy-read:
+        type: boolean
+        default: false
       dry-run:
         type: boolean
         default: false
@@ -80,6 +86,8 @@ jobs:
         id: merge
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0; MIT
         env:
+          JOB_TOKEN: \${{ github.token }}
+          USE_JOB_TOKEN_FOR_POLICY_READ: \${{ inputs.use-job-token-for-policy-read }}
           PULL_NUMBER: \${{ inputs.pull-number }}
           EXPECTED_HEAD: \${{ inputs.expected-head }}
           HEAD_BRANCH: \${{ inputs.head-branch }}
