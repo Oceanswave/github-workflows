@@ -42,7 +42,7 @@ function harness(options = {}) {
     },
   };
   const config = { hasExplicitToken: true, pullNumber: '7', expectedHead: sha, requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368 }]), allowProtectedMerge: false, ...options.config };
-  return { calls, run: () => autoMerge({ github, context: { repo: { owner: 'Oceanswave', repo: 'test' }, runId: 42 }, core: { notice() {} }, config }) };
+  return { calls, github, run: () => autoMerge({ github, policyGithub: options.policyGithub, context: { repo: { owner: 'Oceanswave', repo: 'test' }, runId: 42 }, core: { notice() {} }, config }) };
 }
 const noWrites = calls => assert.equal(calls.filter(item => item === 'enable' || item === 'disable' || Array.isArray(item)).length, 0);
 for (const [name, change] of [
@@ -125,4 +125,35 @@ test('A check from another app cannot impersonate the running controller', async
   const h = harness({ checks: [check, { name: 'queue / Shared auto-merge', status: 'IN_PROGRESS',
     checkSuite: { app: { databaseId: 1 } }, detailsUrl: 'https://github.com/Oceanswave/test/actions/runs/42/job/7' }] });
   assert.equal((await h.run()).outcome, 'held'); noWrites(h.calls);
+});
+
+test('Separate read client handles policy while only existing writer merges', async () => {
+  const reader = harness();
+  const writer = harness({ policyGithub: reader.github, config: { expectedTokenActor: 'Oceanswave' } });
+  assert.equal((await writer.run()).outcome, 'merged');
+  assert.equal(writer.calls.filter(call => call === 'get').length, 0);
+  assert.equal(reader.calls.filter(call => call === 'get').length, 2);
+  assert.equal(reader.calls.filter(Array.isArray).length, 0);
+  assert.equal(writer.calls.filter(Array.isArray).length, 1);
+});
+test('Read-client denial never falls back to writer or attempts a merge', async () => {
+  const reader = harness({ checkError: new Error('Job policy read denied') });
+  const writer = harness({ policyGithub: reader.github });
+  await assert.rejects(writer.run(), /Job policy read denied/);
+  noWrites(writer.calls); noWrites(reader.calls);
+});
+test('Writer actor remains checked when policy uses another client', async () => {
+  const reader = harness();
+  const writer = harness({ policyGithub: reader.github, actor: 'wrong-actor', config: { expectedTokenActor: 'Oceanswave' } });
+  await assert.rejects(writer.run(), /token actor/);
+  noWrites(writer.calls); noWrites(reader.calls);
+});
+
+test('GraphQL permission failures report the exact safe policy field path', async () => {
+  const denied = Object.assign(new Error('Resource not accessible'), { errors: [
+    { type: 'FORBIDDEN', path: ['repository', 'object', 'statusCheckRollup'], message: 'Resource not accessible' },
+  ] });
+  const h = harness({ checkError: denied });
+  await assert.rejects(h.run(), error => error.message.includes('statusCheckRollup') && error.message.includes('FORBIDDEN'));
+  noWrites(h.calls);
 });

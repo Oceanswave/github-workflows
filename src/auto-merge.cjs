@@ -2,7 +2,7 @@
 
 // This exact module is embedded into the reusable workflow. Never load caller
 // code, artifacts, dependencies, or caches in the privileged controller.
-async function autoMerge({ github, context, core, config }) {
+async function autoMerge({ github, policyGithub = github, context, core, config }) {
   const { owner, repo } = context.repo;
   const repository = `${owner}/${repo}`;
   const hold = reason => { core.notice(`Held: ${reason}`); return { outcome: 'held', reason }; };
@@ -18,7 +18,7 @@ async function autoMerge({ github, context, core, config }) {
   let number = config.pullNumber;
   let expectedHead = config.expectedHead;
   if (config.headBranch) {
-    const pulls = await github.paginate(github.rest.pulls.list, {
+    const pulls = await policyGithub.paginate(policyGithub.rest.pulls.list, {
       owner, repo, state: 'open', base: 'main', head: `${owner}:${config.headBranch}`, per_page: 100,
     });
     if (!pulls.length) return hold('branch has no open pull request');
@@ -34,7 +34,17 @@ async function autoMerge({ github, context, core, config }) {
     const { viewer } = await github.graphql('query { viewer { login } }');
     if (viewer.login !== config.expectedTokenActor) throw new Error('Automation token actor does not match the existing caller contract.');
   }
-  const getPull = async () => (await github.rest.pulls.get({ owner, repo, pull_number: Number(number) })).data;
+  const getPull = async () => (await policyGithub.rest.pulls.get({ owner, repo, pull_number: Number(number) })).data;
+  const readGraphql = async (...args) => {
+    try { return await policyGithub.graphql(...args); }
+    catch (error) {
+      if (Array.isArray(error.errors)) {
+        const details = error.errors.map(({ type, path, message }) => ({ type, path, message }));
+        error.message += `\nPolicy read details: ${JSON.stringify(details)}`;
+      }
+      throw error;
+    }
+  };
   const inspect = async pull => {
     if (terminal(pull)) return finish(pull);
     if (pull.state !== 'open') return hold('unknown pull request state');
@@ -47,7 +57,7 @@ async function autoMerge({ github, context, core, config }) {
     if (config.excludeDependabot && pull.user?.login === 'dependabot[bot]') return hold('Dependabot belongs to its separate validator');
     if (config.requireDependabot && (pull.user?.login !== 'dependabot[bot]' || pull.user?.id !== 49699333 || pull.user?.type !== 'Bot')) return hold('Dependabot identity does not match');
     if (pull.mergeable !== true || !['clean', 'unstable', 'has_hooks'].includes(pull.mergeable_state)) return hold('GitHub reports unmet merge requirements');
-    const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: Number(number), per_page: 100 });
+    const reviews = await policyGithub.paginate(policyGithub.rest.pulls.listReviews, { owner, repo, pull_number: Number(number), per_page: 100 });
     const latest = new Map();
     for (const review of reviews) {
       if (review.author_association === 'NONE' && review.state === 'COMMENTED') continue;
@@ -56,7 +66,7 @@ async function autoMerge({ github, context, core, config }) {
     if ([...latest.values()].includes('CHANGES_REQUESTED')) return hold('changes requested');
     let cursor = null;
     do {
-      const result = await github.graphql(`query Reviews($id: ID!, $cursor: String) {
+      const result = await readGraphql(`query Reviews($id: ID!, $cursor: String) {
         node(id: $id) { ... on PullRequest {
           reviewDecision
           reviewThreads(first: 100, after: $cursor) { nodes { isResolved } pageInfo { hasNextPage endCursor } }
@@ -71,7 +81,7 @@ async function autoMerge({ github, context, core, config }) {
     const checks = [];
     cursor = null;
     do {
-      const result = await github.graphql(`query Checks($owner: String!, $repo: String!, $sha: GitObjectID!, $cursor: String) {
+      const result = await readGraphql(`query Checks($owner: String!, $repo: String!, $sha: GitObjectID!, $cursor: String) {
         repository(owner: $owner, name: $repo) { object(oid: $sha) { ... on Commit {
           oid
           statusCheckRollup { contexts(first: 100, after: $cursor) {

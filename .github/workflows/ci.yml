@@ -30,4 +30,5 @@ jobs:
       pull-number: ${{ format('{0}', github.event.pull_request.number) }}
       expected-head: ${{ github.event.pull_request.head.sha }}
       required-checks: '[{"name":"verify","appId":15368}]'
+      use-job-token-for-policy-read: true
       dry-run: true
