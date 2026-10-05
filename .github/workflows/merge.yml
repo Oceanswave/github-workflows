@@ -83,7 +83,8 @@ jobs:
               const required = JSON.parse(config.requiredChecks);
               if (owner !== 'Oceanswave' || !Array.isArray(required) || !required.length ||
                   required.some(check => !check || typeof check.name !== 'string' || !check.name ||
-                    !Number.isSafeInteger(check.appId) || check.appId < 1)) {
+                    !Number.isSafeInteger(check.appId) || check.appId < 1 ||
+                    (check.allowSkipped !== undefined && typeof check.allowSkipped !== 'boolean'))) {
                 throw new Error('An Oceanswave caller and explicit checks with app IDs are required.');
               }
               let number = config.pullNumber;
@@ -163,7 +164,7 @@ jobs:
                 } while (cursor);
                 for (const requirement of required) {
                   const matches = checks.filter(check => check.name === requirement.name && check.checkSuite?.app?.databaseId === requirement.appId);
-                  if (matches.length !== 1 || matches[0].status !== 'COMPLETED' || matches[0].conclusion !== 'SUCCESS') return hold(`required check ${requirement.name} from app ${requirement.appId} has not passed`);
+                  if (matches.length !== 1 || matches[0].status !== 'COMPLETED' || !['SUCCESS', ...(requirement.allowSkipped ? ['SKIPPED'] : [])].includes(matches[0].conclusion)) return hold(`required check ${requirement.name} from app ${requirement.appId} has not passed`);
                 }
                 for (const check of checks) {
                   // Only this job can be pending; every other CI/status context must pass.

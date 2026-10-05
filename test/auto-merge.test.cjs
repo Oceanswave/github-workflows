@@ -103,3 +103,20 @@ test('Generated runtime contains the exact tested function', () => {
   new (Object.getPrototypeOf(async function () {}).constructor)('github', 'context', 'core', embedded);
 });
 test('Missing required maintainer token never falls back to GITHUB_TOKEN', async () => { const h = harness({ config: { expectedTokenActor: 'Oceanswave', hasExplicitToken: false } }); await assert.rejects(h.run(), /fallback is forbidden/); noWrites(h.calls); });
+
+for (const [name, conclusion, allowSkipped, appId, outcome] of [
+  ['required skipped by default', 'SKIPPED', undefined, 15368, 'held'],
+  ['explicit trusted conditional skip', 'SKIPPED', true, 15368, 'merged'],
+  ['explicit conditional failure', 'FAILURE', true, 15368, 'held'],
+  ['conditional skip from wrong app', 'SKIPPED', true, 1, 'held'],
+  ['strict false conditional skip', 'SKIPPED', false, 15368, 'held'],
+]) test(name, async () => {
+  const h = harness({ checks: [{ ...check, conclusion, checkSuite: { app: { databaseId: appId } } }],
+    config: { requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368, allowSkipped }]) } });
+  assert.equal((await h.run()).outcome, outcome);
+  if (outcome === 'held') noWrites(h.calls);
+});
+test('Reject ambiguous conditional-check configuration', async () => {
+  const h = harness({ config: { requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368, allowSkipped: 'true' }]) } });
+  await assert.rejects(h.run(), /explicit checks/); noWrites(h.calls);
+});
