@@ -61,6 +61,7 @@ jobs:
           EXPECTED_HEAD: ${{ inputs.expected-head }}
           HEAD_BRANCH: ${{ inputs.head-branch }}
           REQUIRED_CHECKS: ${{ inputs.required-checks }}
+          HAS_EXPLICIT_TOKEN: ${{ secrets.token != '' }}
           EXPECTED_TOKEN_ACTOR: ${{ inputs.expected-token-actor }}
           REQUIRED_LABEL: ${{ inputs.required-label }}
           EXCLUDE_DEPENDABOT: ${{ inputs.exclude-dependabot }}
@@ -100,6 +101,7 @@ jobs:
               }
               if (expectedHead && !/^[0-9a-f]{40}$/.test(expectedHead)) throw new Error('A full expected head SHA is required.');
               if (config.expectedTokenActor) {
+                if (!config.hasExplicitToken) throw new Error('The existing named maintainer token is required; GITHUB_TOKEN fallback is forbidden.');
                 const { viewer } = await github.graphql('query { viewer { login } }');
                 if (viewer.login !== config.expectedTokenActor) throw new Error('Automation token actor does not match the existing caller contract.');
               }
@@ -204,6 +206,7 @@ jobs:
               headBranch: process.env.HEAD_BRANCH,
               requiredChecks: process.env.REQUIRED_CHECKS,
               expectedTokenActor: process.env.EXPECTED_TOKEN_ACTOR,
+              hasExplicitToken: process.env.HAS_EXPLICIT_TOKEN === 'true',
               requiredLabel: process.env.REQUIRED_LABEL,
               excludeDependabot: process.env.EXCLUDE_DEPENDABOT === 'true',
               requireDependabot: process.env.REQUIRE_DEPENDABOT === 'true',

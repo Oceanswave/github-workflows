@@ -41,7 +41,7 @@ function harness(options = {}) {
       throw new Error('Unexpected GraphQL operation');
     },
   };
-  const config = { pullNumber: '7', expectedHead: sha, requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368 }]), allowProtectedMerge: false, ...options.config };
+  const config = { hasExplicitToken: true, pullNumber: '7', expectedHead: sha, requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368 }]), allowProtectedMerge: false, ...options.config };
   return { calls, run: () => autoMerge({ github, context: { repo: { owner: 'Oceanswave', repo: 'test' }, runId: 42 }, core: { notice() {} }, config }) };
 }
 const noWrites = calls => assert.equal(calls.filter(item => item === 'enable' || item === 'disable' || Array.isArray(item)).length, 0);
@@ -102,3 +102,4 @@ test('Generated runtime contains the exact tested function', () => {
   assert.equal(embedded.slice(0, source.length), source);
   new (Object.getPrototypeOf(async function () {}).constructor)('github', 'context', 'core', embedded);
 });
+test('Missing required maintainer token never falls back to GITHUB_TOKEN', async () => { const h = harness({ config: { expectedTokenActor: 'Oceanswave', hasExplicitToken: false } }); await assert.rejects(h.run(), /fallback is forbidden/); noWrites(h.calls); });

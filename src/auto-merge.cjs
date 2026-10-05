@@ -29,6 +29,7 @@ async function autoMerge({ github, context, core, config }) {
   }
   if (expectedHead && !/^[0-9a-f]{40}$/.test(expectedHead)) throw new Error('A full expected head SHA is required.');
   if (config.expectedTokenActor) {
+    if (!config.hasExplicitToken) throw new Error('The existing named maintainer token is required; GITHUB_TOKEN fallback is forbidden.');
     const { viewer } = await github.graphql('query { viewer { login } }');
     if (viewer.login !== config.expectedTokenActor) throw new Error('Automation token actor does not match the existing caller contract.');
   }

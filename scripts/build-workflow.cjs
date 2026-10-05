@@ -9,6 +9,7 @@ const result = await autoMerge({ github, context, core, config: {
   headBranch: process.env.HEAD_BRANCH,
   requiredChecks: process.env.REQUIRED_CHECKS,
   expectedTokenActor: process.env.EXPECTED_TOKEN_ACTOR,
+  hasExplicitToken: process.env.HAS_EXPLICIT_TOKEN === 'true',
   requiredLabel: process.env.REQUIRED_LABEL,
   excludeDependabot: process.env.EXCLUDE_DEPENDABOT === 'true',
   requireDependabot: process.env.REQUIRE_DEPENDABOT === 'true',
@@ -83,6 +84,7 @@ jobs:
           EXPECTED_HEAD: \${{ inputs.expected-head }}
           HEAD_BRANCH: \${{ inputs.head-branch }}
           REQUIRED_CHECKS: \${{ inputs.required-checks }}
+          HAS_EXPLICIT_TOKEN: \${{ secrets.token != '' }}
           EXPECTED_TOKEN_ACTOR: \${{ inputs.expected-token-actor }}
           REQUIRED_LABEL: \${{ inputs.required-label }}
           EXCLUDE_DEPENDABOT: \${{ inputs.exclude-dependabot }}
