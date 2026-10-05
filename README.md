@@ -29,6 +29,13 @@ CI. Required check names **and app IDs** are explicit caller inputs. Legacy
 commit statuses cannot establish an app-pinned required check. API read errors
 fail the job; unavailable policy information never grants eligibility.
 
+Required checks default to completed `SUCCESS`. A caller whose trusted CI
+classifier deliberately skips an unchanged component can explicitly add
+`"allowSkipped":true` to that component's requirement. Only completed `SKIPPED`
+from the configured app is additionally accepted; failures, pending checks,
+missing checks and app mismatches still hold. Keep the classifier/safety check
+strictly required and review each conditional-check exception in the caller.
+
 Eligible PRs are rechecked and squash-merged through GitHub's ordinary REST
 endpoint with the exact verified head SHA. No persistent auto-merge request is
 armed. Closed or merged PRs skip; an API failure is suppressed only after an
