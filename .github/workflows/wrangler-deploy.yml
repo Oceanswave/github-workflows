@@ -1,0 +1,118 @@
+name: Shared Wrangler deploy
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        required: true
+      environment:
+        type: string
+        default: ''
+      node-version:
+        type: string
+        default: '22'
+      test-command:
+        type: string
+        default: ''
+      wrangler-version:
+        type: string
+        default: '4.151.3'
+      wrangler-args:
+        type: string
+        default: ''
+      dry-run:
+        type: boolean
+        default: false
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+    outputs:
+      deployment-url:
+        value: ${{ jobs.deploy.outputs.deployment-url }}
+
+# Caller inputs reach shells only through env, never interpolated script text.
+# Cloudflare credentials are exposed only to the real deploy step; dry runs and
+# test commands never see them. Worker secret values are never set or uploaded.
+jobs:
+  deploy:
+    name: Wrangler deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    environment: ${{ inputs.environment || null }}
+    outputs:
+      deployment-url: ${{ steps.deploy.outputs.deployment-url }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # same pin as ci.yml
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # same pin as ci.yml
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Validate inputs and credentials
+        working-directory: .
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          WRANGLER_VERSION: ${{ inputs.wrangler-version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          HAS_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+        run: |
+          if [[ ! -d "$WORKING_DIRECTORY" ]]; then
+            echo "::error::working-directory '$WORKING_DIRECTORY' does not exist in the checkout."
+            exit 1
+          fi
+          if [[ ! "$WRANGLER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::wrangler-version must be an exact version such as 4.42.0, got '$WRANGLER_VERSION'."
+            exit 1
+          fi
+          if [[ "$DRY_RUN" != 'true' ]]; then
+            missing=()
+            [[ "$HAS_API_TOKEN" == 'true' ]] || missing+=(CLOUDFLARE_API_TOKEN)
+            [[ "$HAS_ACCOUNT_ID" == 'true' ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+            if (( ${#missing[@]} )); then
+              echo "::error::Missing required secret(s) for deploy: ${missing[*]}. Pass them explicitly under 'secrets:' or set dry-run: true."
+              exit 1
+            fi
+          fi
+      - name: Test
+        if: inputs.test-command != ''
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$TEST_COMMAND"
+      - name: Wrangler deploy (dry run)
+        if: inputs.dry-run
+        env:
+          WRANGLER_VERSION: ${{ inputs.wrangler-version }}
+          WRANGLER_ARGS: ${{ inputs.wrangler-args }}
+        run: |
+          read -ra args <<< "$WRANGLER_ARGS"
+          npx --yes "wrangler@$WRANGLER_VERSION" deploy --dry-run "${args[@]}"
+      - name: Wrangler deploy
+        id: deploy
+        if: ${{ !inputs.dry-run }}
+        env:
+          WRANGLER_VERSION: ${{ inputs.wrangler-version }}
+          WRANGLER_ARGS: ${{ inputs.wrangler-args }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          read -ra args <<< "$WRANGLER_ARGS"
+          export WRANGLER_OUTPUT_FILE_PATH="$RUNNER_TEMP/wrangler-output.ndjson"
+          npx --yes "wrangler@$WRANGLER_VERSION" deploy "${args[@]}"
+          url="$(node -e '
+            const lines = require("node:fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
+            const deploy = lines.map(line => JSON.parse(line)).filter(entry => entry.type === "deploy").pop();
+            process.stdout.write((deploy && deploy.targets && deploy.targets[0]) || "");
+          ' "$WRANGLER_OUTPUT_FILE_PATH" 2>/dev/null || true)"
+          echo "deployment-url=$url" >> "$GITHUB_OUTPUT"
+          if [[ -n "$url" ]]; then echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"; fi
