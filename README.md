@@ -95,6 +95,54 @@ testing if either secret is empty. Pass both secrets by name; never use
 The workflow never sets Worker secret values; manage those in Cloudflare. The
 `deployment-url` output is the first deployed target Wrangler reports, or empty.
 
+## Terraform
+
+`terraform.yml` always runs a `plan` job (`fmt -check`, `init`, `validate`,
+`plan -out=tfplan -input=false -lock-timeout=5m`) in `working-directory`, and an
+`apply` job only when `apply: true`.
+
+```yaml
+jobs:
+  terraform:
+    permissions:
+      contents: read
+    uses: Oceanswave/github-workflows/.github/workflows/terraform.yml@v1
+    with:
+      working-directory: infra
+      backend-config: backend.r2.hcl
+      apply: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      environment: production
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TF_STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+      TF_STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+      TF_VARS_JSON: ${{ secrets.TF_VARS_JSON }}
+```
+
+Inputs: `working-directory` (required); `terraform-version` (exact version,
+`1.9.8`); `apply` (`false`); `environment` (GitHub environment for the apply
+job only, so protection rules gate apply but not plan); and `backend-config`
+(file path relative to the working directory, passed as `-backend-config`).
+
+All secrets are optional and exported only when non-empty, only to the steps
+that need them: `CLOUDFLARE_API_TOKEN` as `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` as `TF_VAR_cloudflare_account_id` (plan and apply);
+`TF_STATE_ACCESS_KEY_ID` / `TF_STATE_SECRET_ACCESS_KEY` as `AWS_ACCESS_KEY_ID`
+/ `AWS_SECRET_ACCESS_KEY` for an S3-compatible (for example R2) backend. Put
+the bucket, endpoint and `skip_*` flags in the backend config file.
+`TF_VARS_JSON` must be a JSON object; it is written with `umask 077` to a
+`*.auto.tfvars.json` under `$RUNNER_TEMP`, outside the checkout, passed as
+`-var-file`, and removed at the end of the job. Every string value in it is
+masked, so keep non-secret variables in committed tfvars instead. Never use
+`secrets: inherit`.
+
+The step summary shows only add/change/replace/destroy counts. The plan log
+itself is Terraform's normal output, so mark secret variables and outputs
+`sensitive`. The plan file is never uploaded; the apply job re-plans and applies
+that fresh plan with `-auto-approve`, serialized per working directory by the
+`terraform-<working-directory>` concurrency group without cancellation.
+
 ## Test and promote
 
 ```sh
