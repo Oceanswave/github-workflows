@@ -1,0 +1,222 @@
+name: Shared Terraform
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        required: true
+      terraform-version:
+        type: string
+        default: '1.9.8'
+      apply:
+        type: boolean
+        default: false
+      environment:
+        type: string
+        default: ''
+      backend-config:
+        type: string
+        default: ''
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        required: false
+      TF_STATE_ACCESS_KEY_ID:
+        required: false
+      TF_STATE_SECRET_ACCESS_KEY:
+        required: false
+      TF_VARS_JSON:
+        required: false
+
+# Caller inputs reach shells only through env, never interpolated script text.
+# Secrets reach only the steps that need them, under staging names, and are
+# exported to Terraform only when non-empty so an unset secret never overrides a
+# variable default or an ambient credential chain. TF_VARS_JSON is written with
+# umask 077 under $RUNNER_TEMP (outside the checkout) and its string values are
+# masked. Plan files hold secret values: they are never uploaded as artifacts,
+# the apply job re-plans, and the step summary reports only change counts.
+jobs:
+  plan:
+    name: Terraform plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      CHECKPOINT_DISABLE: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # same pin as ci.yml
+        with:
+          persist-credentials: false
+      - name: Validate inputs
+        working-directory: .
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          TERRAFORM_VERSION: ${{ inputs.terraform-version }}
+          BACKEND_CONFIG: ${{ inputs.backend-config }}
+        run: |
+          if [[ ! -d "$WORKING_DIRECTORY" ]]; then
+            echo "::error::working-directory '$WORKING_DIRECTORY' does not exist in the checkout."
+            exit 1
+          fi
+          if [[ ! "$TERRAFORM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::terraform-version must be an exact version such as 1.9.8, got '$TERRAFORM_VERSION'."
+            exit 1
+          fi
+          if [[ -n "$BACKEND_CONFIG" && ! -f "$WORKING_DIRECTORY/$BACKEND_CONFIG" ]]; then
+            echo "::error::backend-config '$BACKEND_CONFIG' is not a file relative to working-directory."
+            exit 1
+          fi
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - name: Write secret tfvars
+        env:
+          TF_VARS_JSON: ${{ secrets.TF_VARS_JSON }}
+        run: |
+          [[ -n "$TF_VARS_JSON" ]] || exit 0
+          if ! jq -e 'type == "object"' >/dev/null 2>&1 <<< "$TF_VARS_JSON"; then
+            echo "::error::TF_VARS_JSON must be a JSON object."
+            exit 1
+          fi
+          while IFS= read -r line; do
+            if [[ -n "$line" ]]; then echo "::add-mask::$line"; fi
+          done < <(jq -r '.. | strings' <<< "$TF_VARS_JSON")
+          (umask 077 && printf '%s' "$TF_VARS_JSON" > "$RUNNER_TEMP/ci-secrets.auto.tfvars.json")
+      - name: Terraform fmt
+        run: terraform fmt -check -diff
+      - name: Terraform init
+        env:
+          BACKEND_CONFIG: ${{ inputs.backend-config }}
+          STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+        run: |
+          if [[ -n "$STATE_ACCESS_KEY_ID" ]]; then export AWS_ACCESS_KEY_ID="$STATE_ACCESS_KEY_ID"; fi
+          if [[ -n "$STATE_SECRET_ACCESS_KEY" ]]; then export AWS_SECRET_ACCESS_KEY="$STATE_SECRET_ACCESS_KEY"; fi
+          args=()
+          if [[ -n "$BACKEND_CONFIG" ]]; then args+=("-backend-config=$BACKEND_CONFIG"); fi
+          terraform init -input=false "${args[@]}"
+      - name: Terraform validate
+        run: terraform validate
+      - name: Terraform plan
+        env:
+          STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [[ -n "$STATE_ACCESS_KEY_ID" ]]; then export AWS_ACCESS_KEY_ID="$STATE_ACCESS_KEY_ID"; fi
+          if [[ -n "$STATE_SECRET_ACCESS_KEY" ]]; then export AWS_SECRET_ACCESS_KEY="$STATE_SECRET_ACCESS_KEY"; fi
+          if [[ -n "$CF_API_TOKEN" ]]; then export CLOUDFLARE_API_TOKEN="$CF_API_TOKEN"; fi
+          if [[ -n "$CF_ACCOUNT_ID" ]]; then export TF_VAR_cloudflare_account_id="$CF_ACCOUNT_ID"; fi
+          args=()
+          tfvars="$RUNNER_TEMP/ci-secrets.auto.tfvars.json"
+          if [[ -f "$tfvars" ]]; then args+=("-var-file=$tfvars"); fi
+          terraform plan -out=tfplan -input=false -lock-timeout=5m "${args[@]}"
+      - name: Summarize plan
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+        run: |
+          if [[ -n "$STATE_ACCESS_KEY_ID" ]]; then export AWS_ACCESS_KEY_ID="$STATE_ACCESS_KEY_ID"; fi
+          if [[ -n "$STATE_SECRET_ACCESS_KEY" ]]; then export AWS_SECRET_ACCESS_KEY="$STATE_SECRET_ACCESS_KEY"; fi
+          # Only action counts leave jq; plan values never reach the log or summary.
+          counts="$(terraform show -json tfplan | jq -r '
+            [.resource_changes[]?.change.actions] as $a
+            | [ ($a | map(select(. == ["create"])) | length),
+                ($a | map(select(. == ["update"])) | length),
+                ($a | map(select(index("create") and index("delete"))) | length),
+                ($a | map(select(. == ["delete"])) | length) ]
+            | @tsv')"
+          read -r add change replace destroy <<< "$counts"
+          {
+            echo "### Terraform plan: \`$WORKING_DIRECTORY\`"
+            echo
+            echo "| Add | Change | Replace | Destroy |"
+            echo "| --: | --: | --: | --: |"
+            echo "| $add | $change | $replace | $destroy |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove plan and secret tfvars
+        if: always()
+        run: rm -f tfplan "$RUNNER_TEMP/ci-secrets.auto.tfvars.json"
+
+  apply:
+    name: Terraform apply
+    needs: plan
+    if: inputs.apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    environment: ${{ inputs.environment || null }}
+    concurrency:
+      group: terraform-${{ inputs.working-directory }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      CHECKPOINT_DISABLE: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # same pin as ci.yml
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+      - name: Write secret tfvars
+        env:
+          TF_VARS_JSON: ${{ secrets.TF_VARS_JSON }}
+        run: |
+          [[ -n "$TF_VARS_JSON" ]] || exit 0
+          if ! jq -e 'type == "object"' >/dev/null 2>&1 <<< "$TF_VARS_JSON"; then
+            echo "::error::TF_VARS_JSON must be a JSON object."
+            exit 1
+          fi
+          while IFS= read -r line; do
+            if [[ -n "$line" ]]; then echo "::add-mask::$line"; fi
+          done < <(jq -r '.. | strings' <<< "$TF_VARS_JSON")
+          (umask 077 && printf '%s' "$TF_VARS_JSON" > "$RUNNER_TEMP/ci-secrets.auto.tfvars.json")
+      - name: Terraform init
+        env:
+          BACKEND_CONFIG: ${{ inputs.backend-config }}
+          STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+        run: |
+          if [[ -n "$STATE_ACCESS_KEY_ID" ]]; then export AWS_ACCESS_KEY_ID="$STATE_ACCESS_KEY_ID"; fi
+          if [[ -n "$STATE_SECRET_ACCESS_KEY" ]]; then export AWS_SECRET_ACCESS_KEY="$STATE_SECRET_ACCESS_KEY"; fi
+          args=()
+          if [[ -n "$BACKEND_CONFIG" ]]; then args+=("-backend-config=$BACKEND_CONFIG"); fi
+          terraform init -input=false "${args[@]}"
+      - name: Terraform plan and apply
+        env:
+          STATE_ACCESS_KEY_ID: ${{ secrets.TF_STATE_ACCESS_KEY_ID }}
+          STATE_SECRET_ACCESS_KEY: ${{ secrets.TF_STATE_SECRET_ACCESS_KEY }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [[ -n "$STATE_ACCESS_KEY_ID" ]]; then export AWS_ACCESS_KEY_ID="$STATE_ACCESS_KEY_ID"; fi
+          if [[ -n "$STATE_SECRET_ACCESS_KEY" ]]; then export AWS_SECRET_ACCESS_KEY="$STATE_SECRET_ACCESS_KEY"; fi
+          if [[ -n "$CF_API_TOKEN" ]]; then export CLOUDFLARE_API_TOKEN="$CF_API_TOKEN"; fi
+          if [[ -n "$CF_ACCOUNT_ID" ]]; then export TF_VAR_cloudflare_account_id="$CF_ACCOUNT_ID"; fi
+          args=()
+          tfvars="$RUNNER_TEMP/ci-secrets.auto.tfvars.json"
+          if [[ -f "$tfvars" ]]; then args+=("-var-file=$tfvars"); fi
+          terraform plan -out=tfplan -input=false -lock-timeout=5m "${args[@]}"
+          terraform apply -auto-approve -input=false -lock-timeout=5m tfplan
+      - name: Remove plan and secret tfvars
+        if: always()
+        run: rm -f tfplan "$RUNNER_TEMP/ci-secrets.auto.tfvars.json"
