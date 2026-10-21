@@ -63,6 +63,38 @@ official `actions/github-script` action is pinned to an immutable audited SHA.
 Its v9 Node 24 runtime requires runner 2.327.1 or newer; GitHub-hosted runners
 supply that runtime. Self-hosted application builds remain caller-specific.
 
+## Wrangler deploy
+
+`wrangler-deploy.yml` deploys a Cloudflare Worker from `working-directory` with
+`npx --yes wrangler@<wrangler-version> deploy`, so no `package.json` is needed.
+
+```yaml
+jobs:
+  deploy:
+    permissions:
+      contents: read
+    uses: Oceanswave/github-workflows/.github/workflows/wrangler-deploy.yml@v1
+    with:
+      working-directory: workers/api
+      environment: production
+      test-command: npm ci && npm test
+      wrangler-args: --env production
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+Inputs: `working-directory` (required); `environment` (optional GitHub
+deployment environment); `node-version` (`22`); `test-command` (run in the
+working directory before deploying); `wrangler-version` (exact version, pinned
+by default); `wrangler-args` (whitespace-split, no shell quoting); and `dry-run`
+(`false`). `dry-run: true` runs `wrangler deploy --dry-run` and needs no
+Cloudflare secrets, which suits pull requests. Otherwise the job fails before
+testing if either secret is empty. Pass both secrets by name; never use
+`secrets: inherit`. They reach only the deploy step, never the test command.
+The workflow never sets Worker secret values; manage those in Cloudflare. The
+`deployment-url` output is the first deployed target Wrangler reports, or empty.
+
 ## Test and promote
 
 ```sh
