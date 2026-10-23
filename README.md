@@ -56,12 +56,36 @@ checks and reviews can still change between the final read and write. Configure
 server rules to enforce critical requirements and treat a rejected merge as a
 failure. Merge queues need a separately reviewed integration.
 
-The privileged job runs on GitHub-hosted Ubuntu and never checks out or executes
-PR code, downloads artifacts, restores caches, or expands secrets. PR fields
-enter APIs as data, never executable shell or interpolated JavaScript. The
-official `actions/github-script` action is pinned to an immutable audited SHA.
-Its v9 Node 24 runtime requires runner 2.327.1 or newer; GitHub-hosted runners
-supply that runtime. Self-hosted application builds remain caller-specific.
+The privileged job runs on the caller-selected runner (self-hosted by default;
+see [Runners](#runners)) and never checks out or executes PR code, downloads
+artifacts, restores caches, or expands secrets. PR fields enter APIs as data,
+never executable shell or interpolated JavaScript. The official
+`actions/github-script` action is pinned to an immutable audited SHA. Its v9
+Node 24 runtime requires runner 2.327.1 or newer; GitHub-hosted runners and the
+registered Oceanswave self-hosted runners are newer. Self-hosted application
+builds remain caller-specific.
+
+## Runners
+
+Every reusable workflow takes a `runs-on` input: a JSON array of runner labels,
+passed to each job as `runs-on: ${{ fromJSON(inputs.runs-on) }}`. The default,
+`'["self-hosted","Linux","X64"]'`, matches the labels every registered
+Oceanswave runner carries. To use a GitHub-hosted runner, pass a JSON string,
+which `fromJSON` also accepts:
+
+```yaml
+    with:
+      runs-on: '"ubuntu-latest"'
+```
+
+Oceanswave is a personal account, so self-hosted runners are registered per
+repository. A caller repository without its own registered runner must pass
+`runs-on: '"ubuntu-latest"'`, or its jobs queue indefinitely. This repository
+has no self-hosted runner, so its own CI passes `ubuntu-latest`. macOS/Xcode
+jobs stay GitHub-hosted. A public repository using self-hosted runners must
+require approval for workflow runs from all outside contributors. Callers pin
+this repository by commit SHA, so existing callers keep their current runner
+until they move their pin.
 
 ## Wrangler deploy
 

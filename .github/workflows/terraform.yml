@@ -2,6 +2,9 @@ name: Shared Terraform
 on:
   workflow_call:
     inputs:
+      runs-on:
+        type: string
+        default: '["self-hosted","Linux","X64"]'
       working-directory:
         type: string
         required: true
@@ -39,7 +42,7 @@ on:
 jobs:
   plan:
     name: Terraform plan
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -153,7 +156,7 @@ jobs:
     name: Terraform apply
     needs: plan
     if: inputs.apply
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 30
     permissions:
       contents: read

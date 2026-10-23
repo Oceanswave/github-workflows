@@ -3,6 +3,9 @@ name: Shared merge helper
 on:
   workflow_call:
     inputs:
+      runs-on:
+        type: string
+        default: '["self-hosted","Linux","X64"]'
       pull-number:
         type: string
         default: ''
@@ -49,7 +52,7 @@ on:
 jobs:
   merge:
     name: Shared auto-merge
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 5
     outputs:
       outcome: ${{ steps.merge.outputs.outcome }}
