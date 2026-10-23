@@ -27,6 +27,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/merge.yml
     with:
+      runs-on: '"ubuntu-latest"'
       pull-number: ${{ format('{0}', github.event.pull_request.number) }}
       expected-head: ${{ github.event.pull_request.head.sha }}
       required-checks: '[{"name":"verify","appId":15368}]'

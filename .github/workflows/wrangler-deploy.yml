@@ -2,6 +2,9 @@ name: Shared Wrangler deploy
 on:
   workflow_call:
     inputs:
+      runs-on:
+        type: string
+        default: '["self-hosted","Linux","X64"]'
       working-directory:
         type: string
         required: true
@@ -38,7 +41,7 @@ on:
 jobs:
   deploy:
     name: Wrangler deploy
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 15
     permissions:
       contents: read
