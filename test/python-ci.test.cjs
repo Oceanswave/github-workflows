@@ -21,3 +21,8 @@ test('Python CI keeps caller inputs out of script text', () => {
   assert.match(step('Install'), /INSTALL_ARGS: \$\{\{ inputs\.install-args \}\}/);
   assert.match(step('Test'), /TEST_COMMAND: \$\{\{ inputs\.test-command \}\}\n        run: bash -euo pipefail -c "\$TEST_COMMAND"/);
 });
+
+test('Python CI never runs fork pull requests on self-hosted labels', () => {
+  assert.match(workflow, /runs-on:\n        type: string\n        default: '"ubuntu-latest"'/);
+  assert.match(workflow, /if: >-\n      !\(contains\(inputs\.runs-on, 'self-hosted'\) &&\n        github\.event_name == 'pull_request' &&\n        github\.event\.pull_request\.head\.repo\.full_name != github\.repository\)\n    runs-on: \$\{\{ fromJSON\(inputs\.runs-on\) \}\}/);
+});

@@ -4,7 +4,7 @@ on:
     inputs:
       runs-on:
         type: string
-        default: '["self-hosted","Linux","X64"]'
+        default: '"ubuntu-latest"'
       working-directory:
         type: string
         default: '.'
@@ -18,12 +18,18 @@ on:
         type: string
         default: 'python -m pytest -q'
 
+# This workflow executes the checked-out (possibly pull request) code, so unlike the
+# merge helper it defaults to an ephemeral GitHub-hosted runner, and a fork pull
+# request never runs on self-hosted labels: the job is skipped and its check holds.
 # Caller inputs reach shells only through env, never interpolated script text.
-# The job gets a read-only token, no secrets, and no persisted checkout credentials,
-# so it is safe for fork pull requests on GitHub-hosted runners.
+# The job gets a read-only token, no secrets, and no persisted checkout credentials.
 jobs:
   test:
     name: Python CI
+    if: >-
+      !(contains(inputs.runs-on, 'self-hosted') &&
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 15
     permissions:

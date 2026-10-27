@@ -68,7 +68,8 @@ builds remain caller-specific.
 ## Runners
 
 Every reusable workflow takes a `runs-on` input: a JSON array of runner labels,
-passed to each job as `runs-on: ${{ fromJSON(inputs.runs-on) }}`. The default,
+passed to each job as `runs-on: ${{ fromJSON(inputs.runs-on) }}`. The default
+(except Python CI, which defaults to `"ubuntu-latest"`),
 `'["self-hosted","Linux","X64"]'`, matches the labels every registered
 Oceanswave runner carries. To use a GitHub-hosted runner, pass a JSON string,
 which `fromJSON` also accepts:
@@ -170,9 +171,9 @@ that fresh plan with `-auto-approve`, serialized per working directory by the
 ## Python CI
 
 Installs a Python package and runs its test command. It gets a read-only token,
-no secrets and no persisted checkout credentials, so it is safe to run on fork
-pull requests when the caller uses a GitHub-hosted runner. Public repositories
-must: a fork PR must never reach a self-hosted runner.
+no secrets and no persisted checkout credentials. Because it executes pull request
+code, its `runs-on` defaults to `"ubuntu-latest"` (unlike the other workflows), and
+a fork pull request is skipped rather than run on self-hosted labels.
 
 ```yaml
 jobs:
