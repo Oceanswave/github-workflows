@@ -6,6 +6,11 @@
 // read as unknown or blocked. Re-read with a short backoff before holding on merge state.
 const MERGE_STATE_RETRIES = 4;
 const MERGE_STATE_DELAY_MS = 5000;
+// Opt-in: callers may let checks that are still queued or running finish instead of holding at once.
+// The cap keeps the job inside its timeout; failed checks and every other gate still hold immediately.
+const MAX_PENDING_WAIT_SECONDS = 900;
+const PENDING_DELAY_MS = 15000;
+const PENDING_MAX_DELAY_MS = 60000;
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function autoMerge({ github, policyGithub = github, context, core, config, sleep = delay }) {
@@ -21,6 +26,10 @@ async function autoMerge({ github, policyGithub = github, context, core, config,
         (check.allowSkipped !== undefined && typeof check.allowSkipped !== 'boolean'))) {
     throw new Error('An Oceanswave caller and explicit checks with app IDs are required.');
   }
+  const waitSeconds = Number(config.pendingWaitSeconds || 0);
+  if (!Number.isSafeInteger(waitSeconds) || waitSeconds < 0) throw new Error('pending-wait-seconds must be a whole number of seconds.');
+  if (waitSeconds > MAX_PENDING_WAIT_SECONDS) core.warning(`pending-wait-seconds is capped at ${MAX_PENDING_WAIT_SECONDS}.`);
+  const pendingWaitMs = Math.min(waitSeconds, MAX_PENDING_WAIT_SECONDS) * 1000;
   let number = config.pullNumber;
   let expectedHead = config.expectedHead;
   if (config.headBranch) {
@@ -62,10 +71,15 @@ async function autoMerge({ github, policyGithub = github, context, core, config,
     if (config.requiredLabel && !pull.labels?.some(label => label.name === config.requiredLabel)) return hold('required label is absent');
     if (config.excludeDependabot && pull.user?.login === 'dependabot[bot]') return hold('Dependabot belongs to its separate validator');
     if (config.requireDependabot && (pull.user?.login !== 'dependabot[bot]' || pull.user?.id !== 49699333 || pull.user?.type !== 'Bot')) return hold('Dependabot identity does not match');
+    let settlingHold = null;
     if (pull.mergeable !== true || !['clean', 'unstable', 'has_hooks'].includes(pull.mergeable_state)) {
       const settling = pull.mergeable === null || ['unknown', 'blocked'].includes(pull.mergeable_state);
       const reason = 'GitHub reports unmet merge requirements';
-      return settling ? { outcome: 'held', reason, settling } : hold(reason);
+      if (!settling) return hold(reason);
+      settlingHold = { outcome: 'held', reason, settling };
+      // A required check that is still running also reads as blocked. Only when waiting is
+      // opted in, look past the merge state so a pending check can be waited out.
+      if (!pendingWaitMs) return settlingHold;
     }
     const reviews = await policyGithub.paginate(policyGithub.rest.pulls.listReviews, { owner, repo, pull_number: Number(number), per_page: 100 });
     const latest = new Map();
@@ -104,15 +118,22 @@ async function autoMerge({ github, policyGithub = github, context, core, config,
         } } }
       }`, { owner, repo, sha: pull.head.sha, cursor });
       const commit = result.repository?.object;
+      if (commit?.oid === pull.head.sha && !commit.statusCheckRollup && !cursor) return { outcome: 'held', reason: 'current-head checks are not reported yet', pending: true };
       if (commit?.oid !== pull.head.sha || !commit.statusCheckRollup?.contexts) return hold('current-head checks are unavailable');
       const page = commit.statusCheckRollup.contexts;
       checks.push(...page.nodes);
       cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
       if (page.pageInfo.hasNextPage && !cursor) throw new Error('Check pagination is incomplete.');
     } while (cursor);
+    // A failure anywhere holds at once; a check that has not finished is only remembered so
+    // a failure later in the list still wins over waiting.
+    let pending = null;
     for (const requirement of required) {
+      const reason = `required check ${requirement.name} from app ${requirement.appId} has not passed`;
       const matches = checks.filter(check => check.name === requirement.name && check.checkSuite?.app?.databaseId === requirement.appId);
-      if (matches.length !== 1 || matches[0].status !== 'COMPLETED' || !['SUCCESS', ...(requirement.allowSkipped ? ['SKIPPED'] : [])].includes(matches[0].conclusion)) return hold(`required check ${requirement.name} from app ${requirement.appId} has not passed`);
+      if (matches.length > 1) return hold(reason);
+      if (!matches.length || matches[0].status !== 'COMPLETED') pending ??= reason;
+      else if (!['SUCCESS', ...(requirement.allowSkipped ? ['SKIPPED'] : [])].includes(matches[0].conclusion)) return hold(reason);
     }
     for (const check of checks) {
       // Only this job can be pending; every other CI/status context must pass.
@@ -120,10 +141,19 @@ async function autoMerge({ github, policyGithub = github, context, core, config,
         (check.name === 'Shared auto-merge' || check.name?.endsWith(' / Shared auto-merge')) &&
         check.detailsUrl?.startsWith(`https://github.com/${repository}/actions/runs/${context.runId}/`);
       if (own) continue;
-      if (check.name && (check.status !== 'COMPLETED' || !['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion))) return hold(`check ${check.name} is incomplete or failed`);
-      if (check.context && check.state !== 'SUCCESS') return hold(`status ${check.context} is incomplete or failed`);
+      if (check.name) {
+        const reason = `check ${check.name} is incomplete or failed`;
+        if (check.status !== 'COMPLETED') pending ??= reason;
+        else if (!['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion)) return hold(reason);
+      }
+      if (check.context) {
+        const reason = `status ${check.context} is incomplete or failed`;
+        if (['PENDING', 'EXPECTED'].includes(check.state)) pending ??= reason;
+        else if (check.state !== 'SUCCESS') return hold(reason);
+      }
     }
-    return { outcome: 'eligible' };
+    if (pending) return { outcome: 'held', reason: pending, pending: true };
+    return settlingHold || { outcome: 'eligible' };
   };
   // Read and inspect, re-reading while GitHub may still be settling the merge state.
   const settle = async () => {
@@ -136,13 +166,26 @@ async function autoMerge({ github, policyGithub = github, context, core, config,
       await sleep(MERGE_STATE_DELAY_MS * attempt);
     }
   };
-  let { pull, result } = await settle();
+  // Re-read while the only holds are checks that have not finished, until they do or the budget runs out.
+  const awaitChecks = async budgetMs => {
+    for (let attempt = 1, waited = 0; ; attempt++) {
+      const { pull, result: { pending, ...result } } = await settle();
+      if (!pending) return { pull, result };
+      const remaining = budgetMs - waited;
+      if (remaining <= 0) return { pull, result: hold(result.reason) };
+      const ms = Math.min(PENDING_DELAY_MS * attempt, PENDING_MAX_DELAY_MS, remaining);
+      core.info(`Waiting ${ms / 1000}s: ${result.reason} (${waited / 1000}s of ${budgetMs / 1000}s used).`);
+      await sleep(ms);
+      waited += ms;
+    }
+  };
+  let { pull, result } = await awaitChecks(pendingWaitMs);
   if (result.outcome !== 'eligible') return result;
   if (config.dryRun) return { outcome: 'eligible', number: pull.number };
   const head = pull.head.sha;
   expectedHead = expectedHead || head;
-  // Re-read every mutable hold and current-head check immediately before write.
-  ({ pull, result } = await settle());
+  // Re-read every mutable hold and current-head check immediately before write; no waiting here.
+  ({ pull, result } = await awaitChecks(0));
   if (result.outcome !== 'eligible') return result;
   try {
     const { data: merged } = await github.rest.pulls.merge({

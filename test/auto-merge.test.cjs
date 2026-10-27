@@ -199,3 +199,69 @@ for (const [name, error, logged] of [['already deleted', Object.assign(new Error
     assert.equal(result.outcome, 'merged'); assert.equal(result.branchDeleted, false);
   });
 }
+
+const running = { ...check, status: 'IN_PROGRESS', conclusion: null };
+const lint = { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', checkSuite: { app: { databaseId: 15368 } } };
+const page = (...nodes) => ({ nodes, pageInfo: { hasNextPage: false } });
+test('Wait out a pending non-required check, then merge', async () => {
+  // Reads: initial (pending), after one wait (passed), pre-write recheck (passed).
+  const h = harness({ checkPages: [page(check, { ...lint, status: 'QUEUED', conclusion: null }), page(check, lint), page(check, lint)], config: { pendingWaitSeconds: '300' } });
+  assert.equal((await h.run()).outcome, 'merged');
+  assert.deepEqual(h.sleeps, [15000]);
+});
+test('Hold when a pending check then fails', async () => {
+  const h = harness({ checkPages: [page(check, { ...lint, status: 'IN_PROGRESS', conclusion: null }), page(check, { ...lint, conclusion: 'FAILURE' })], config: { pendingWaitSeconds: '300' } });
+  assert.deepEqual(await h.run(), { outcome: 'held', reason: 'check lint is incomplete or failed' });
+  assert.deepEqual(h.sleeps, [15000]); noWrites(h.calls);
+});
+test('Hold once the pending-check budget is spent', async () => {
+  const h = harness({ checks: [check, { ...lint, status: 'IN_PROGRESS', conclusion: null }], config: { pendingWaitSeconds: '100' } });
+  assert.deepEqual(await h.run(), { outcome: 'held', reason: 'check lint is incomplete or failed' });
+  assert.deepEqual(h.sleeps, [15000, 30000, 45000, 10000]); noWrites(h.calls);
+});
+test('Default zero wait holds a pending check immediately', async () => {
+  const h = harness({ checks: [check, { ...lint, status: 'IN_PROGRESS', conclusion: null }] });
+  assert.deepEqual(await h.run(), { outcome: 'held', reason: 'check lint is incomplete or failed' });
+  assert.deepEqual(h.sleeps, []); noWrites(h.calls);
+});
+test('A failed check holds at once even while another is still pending', async () => {
+  const h = harness({ checks: [running, { ...lint, conclusion: 'FAILURE' }], config: { pendingWaitSeconds: '300' } });
+  assert.deepEqual(await h.run(), { outcome: 'held', reason: 'check lint is incomplete or failed' });
+  assert.deepEqual(h.sleeps, []); noWrites(h.calls);
+});
+test('Wait for a required check that has not appeared yet', async () => {
+  const h = harness({ checkPages: [page(), page(check), page(check)], config: { pendingWaitSeconds: '60' } });
+  assert.equal((await h.run()).outcome, 'merged');
+  assert.deepEqual(h.sleeps, [15000]);
+});
+test('Wait for a pending legacy status', async () => {
+  const status = { context: 'external', state: 'PENDING' };
+  const h = harness({ checkPages: [page(check, status), page(check, { ...status, state: 'SUCCESS' }), page(check, { ...status, state: 'SUCCESS' })], config: { pendingWaitSeconds: '60' } });
+  assert.equal((await h.run()).outcome, 'merged');
+  assert.deepEqual(h.sleeps, [15000]);
+});
+test('A blocked merge state with a running required check is waited out', async () => {
+  const blocked = { ...pull, mergeable_state: 'blocked' };
+  const h = harness({ reads: [blocked, pull, pull], checkPages: [page(running), page(check), page(check)], config: { pendingWaitSeconds: '60' } });
+  assert.equal((await h.run()).outcome, 'merged');
+  assert.deepEqual(h.sleeps, [15000]);
+});
+test('Waiting never bypasses non-check holds', async () => {
+  const h = harness({ threads: [{ isResolved: false }], checks: [check, { ...lint, status: 'IN_PROGRESS', conclusion: null }], config: { pendingWaitSeconds: '300' } });
+  assert.deepEqual(await h.run(), { outcome: 'held', reason: 'unresolved review thread' });
+  assert.deepEqual(h.sleeps, []); noWrites(h.calls);
+});
+test('Pre-write recheck never waits on a newly pending check', async () => {
+  const h = harness({ checkPages: [page(check), page(check, { ...lint, status: 'QUEUED', conclusion: null })], config: { pendingWaitSeconds: '300' } });
+  assert.equal((await h.run()).outcome, 'held');
+  assert.deepEqual(h.sleeps, []); noWrites(h.calls);
+});
+test('Pending wait is capped', async () => {
+  const h = harness({ checks: [running], config: { pendingWaitSeconds: 5000 } });
+  assert.equal((await h.run()).outcome, 'held');
+  assert.equal(h.sleeps.reduce((sum, ms) => sum + ms, 0), 900000);
+});
+for (const value of ['-1', '1.5', 'soon']) test(`Reject invalid pending wait ${value}`, async () => {
+  const h = harness({ config: { pendingWaitSeconds: value } });
+  await assert.rejects(h.run(), /pending-wait-seconds/); noWrites(h.calls);
+});

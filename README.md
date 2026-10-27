@@ -51,6 +51,29 @@ GitHub computes mergeability asynchronously, so a PR can briefly read as
 to four times with a growing delay (5, 10, 15 and 20 seconds) before holding. Other
 states, such as merge conflicts, hold immediately.
 
+### Waiting for checks that are still running
+
+When two workflows on one push both gate a merge, the helper can run while the
+other workflow's checks are still queued or in progress, hold, and never be
+asked again. Callers should **re-run the helper when the other workflow
+completes**, for example from a `workflow_run` (`types: [completed]`) caller
+that passes `head-branch` and `expected-head:
+${{ github.event.workflow_run.head_sha }}`. That event-driven re-evaluation is
+the primary fix.
+
+As a fallback, `pending-wait-seconds` (default `0`, capped at `900`) lets the
+helper wait out checks that have not finished yet. When it is above zero and the
+**only** remaining holds are check runs or commit statuses that are not complete
+(queued, in progress, pending/expected, a required check that has not appeared
+yet, or a `blocked` merge state while such a check runs), the helper re-reads
+and re-inspects with a growing delay (15, 30, 45, then 60 seconds) until they
+finish or the budget is spent, then holds as before. A failed check holds
+immediately even while others are still running, and every other gate (owner,
+app-pinned required checks, token actor, stale head, reviews, threads, labels,
+Dependabot, fork) is unchanged. The final pre-merge recheck never waits. The job
+timeout is 20 minutes to cover the maximum wait; a waiting helper holds a
+runner, so keep the budget modest.
+
 Eligible PRs are rechecked and squash-merged through GitHub's ordinary REST
 endpoint with the exact verified head SHA. No persistent auto-merge request is
 armed. GitHub's `delete_branch_on_merge` does not fire for merges made with an
