@@ -68,7 +68,8 @@ builds remain caller-specific.
 ## Runners
 
 Every reusable workflow takes a `runs-on` input: a JSON array of runner labels,
-passed to each job as `runs-on: ${{ fromJSON(inputs.runs-on) }}`. The default,
+passed to each job as `runs-on: ${{ fromJSON(inputs.runs-on) }}`. The default
+(except Python CI, which defaults to `"ubuntu-latest"`),
 `'["self-hosted","Linux","X64"]'`, matches the labels every registered
 Oceanswave runner carries. To use a GitHub-hosted runner, pass a JSON string,
 which `fromJSON` also accepts:
@@ -166,6 +167,30 @@ itself is Terraform's normal output, so mark secret variables and outputs
 `sensitive`. The plan file is never uploaded; the apply job re-plans and applies
 that fresh plan with `-auto-approve`, serialized per working directory by the
 `terraform-<working-directory>` concurrency group without cancellation.
+
+## Python CI
+
+Installs a Python package and runs its test command. It gets a read-only token,
+no secrets and no persisted checkout credentials. Because it executes pull request
+code, its `runs-on` defaults to `"ubuntu-latest"` (unlike the other workflows), and
+a fork pull request is skipped rather than run on self-hosted labels.
+
+```yaml
+jobs:
+  test:
+    uses: Oceanswave/github-workflows/.github/workflows/python-ci.yml@<sha>
+    with:
+      runs-on: '"ubuntu-latest"'
+      python-version: '3.12'          # default
+      install-args: -e .[test]        # default; split on whitespace, passed to pip install
+      test-command: |                 # default: python -m pytest -q
+        python -m pytest -q tests
+```
+
+`test-command` runs under `bash -euo pipefail` in `working-directory` (default
+`.`). Inputs reach the shell only through environment variables. The check run is
+named `<caller job> / Python CI`, for example `test / Python CI`; use that name in
+required status checks and in the merge helper's `required-checks`.
 
 ## Test and promote
 

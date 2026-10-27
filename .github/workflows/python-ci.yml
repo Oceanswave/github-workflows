@@ -1,0 +1,66 @@
+name: Shared Python CI
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        type: string
+        default: '"ubuntu-latest"'
+      working-directory:
+        type: string
+        default: '.'
+      python-version:
+        type: string
+        default: '3.12'
+      install-args:
+        type: string
+        default: '-e .[test]'
+      test-command:
+        type: string
+        default: 'python -m pytest -q'
+
+# This workflow executes the checked-out (possibly pull request) code, so unlike the
+# merge helper it defaults to an ephemeral GitHub-hosted runner, and a fork pull
+# request never runs on self-hosted labels: the job is skipped and its check holds.
+# Caller inputs reach shells only through env, never interpolated script text.
+# The job gets a read-only token, no secrets, and no persisted checkout credentials.
+jobs:
+  test:
+    name: Python CI
+    if: >-
+      !(contains(inputs.runs-on, 'self-hosted') &&
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name != github.repository)
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # same pin as ci.yml
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Validate inputs
+        working-directory: .
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          if [[ ! -d "$WORKING_DIRECTORY" ]]; then
+            echo "::error::working-directory '$WORKING_DIRECTORY' does not exist in the checkout."
+            exit 1
+          fi
+      - name: Install
+        env:
+          INSTALL_ARGS: ${{ inputs.install-args }}
+        run: |
+          read -ra args <<< "$INSTALL_ARGS"
+          python -m pip install -q "${args[@]}"
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$TEST_COMMAND"
