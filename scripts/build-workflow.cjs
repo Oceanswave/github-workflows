@@ -17,6 +17,7 @@ const result = await autoMerge({ github, policyGithub, context, core, config: {
   excludeDependabot: process.env.EXCLUDE_DEPENDABOT === 'true',
   requireDependabot: process.env.REQUIRE_DEPENDABOT === 'true',
   dryRun: process.env.DRY_RUN === 'true',
+  pendingWaitSeconds: process.env.PENDING_WAIT_SECONDS,
 } });
 core.setOutput('outcome', result.outcome);
 core.setOutput('number', result.number || '');
@@ -62,6 +63,9 @@ on:
       dry-run:
         type: boolean
         default: false
+      pending-wait-seconds:
+        type: number
+        default: 0
     secrets:
       token:
         required: false
@@ -79,7 +83,7 @@ jobs:
   merge:
     name: Shared auto-merge
     runs-on: \${{ fromJSON(inputs.runs-on) }}
-    timeout-minutes: 5
+    timeout-minutes: \${{ inputs.pending-wait-seconds > 0 && 20 || 5 }}
     outputs:
       outcome: \${{ steps.merge.outputs.outcome }}
       number: \${{ steps.merge.outputs.number }}
@@ -101,6 +105,7 @@ jobs:
           EXCLUDE_DEPENDABOT: \${{ inputs.exclude-dependabot }}
           REQUIRE_DEPENDABOT: \${{ inputs.require-dependabot }}
           DRY_RUN: \${{ inputs.dry-run }}
+          PENDING_WAIT_SECONDS: \${{ inputs.pending-wait-seconds }}
         with:
           github-token: \${{ secrets.token || github.token }}
           script: |
