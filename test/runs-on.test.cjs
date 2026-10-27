@@ -5,7 +5,7 @@ const { resolve } = require('node:path');
 const read = name => readFileSync(resolve(__dirname, '../.github/workflows', name), 'utf8');
 const jobs = workflow => workflow.split('\njobs:\n')[1].split(/\n(?=  [\w-]+:\n)/);
 
-for (const name of ['merge.yml', 'wrangler-deploy.yml', 'terraform.yml']) {
+for (const name of ['merge.yml', 'wrangler-deploy.yml', 'terraform.yml', 'python-ci.yml']) {
   test(`${name} runs every job on the caller-selected runner`, () => {
     const workflow = read(name);
     assert.match(workflow, /workflow_call:\n    inputs:\n(?:      .*\n|        .*\n)*      runs-on:\n        type: string\n        default: '\["self-hosted","Linux","X64"\]'\n/);

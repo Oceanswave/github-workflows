@@ -167,6 +167,30 @@ itself is Terraform's normal output, so mark secret variables and outputs
 that fresh plan with `-auto-approve`, serialized per working directory by the
 `terraform-<working-directory>` concurrency group without cancellation.
 
+## Python CI
+
+Installs a Python package and runs its test command. It gets a read-only token,
+no secrets and no persisted checkout credentials, so it is safe to run on fork
+pull requests when the caller uses a GitHub-hosted runner. Public repositories
+must: a fork PR must never reach a self-hosted runner.
+
+```yaml
+jobs:
+  test:
+    uses: Oceanswave/github-workflows/.github/workflows/python-ci.yml@<sha>
+    with:
+      runs-on: '"ubuntu-latest"'
+      python-version: '3.12'          # default
+      install-args: -e .[test]        # default; split on whitespace, passed to pip install
+      test-command: |                 # default: python -m pytest -q
+        python -m pytest -q tests
+```
+
+`test-command` runs under `bash -euo pipefail` in `working-directory` (default
+`.`). Inputs reach the shell only through environment variables. The check run is
+named `<caller job> / Python CI`, for example `test / Python CI`; use that name in
+required status checks and in the merge helper's `required-checks`.
+
 ## Test and promote
 
 ```sh
