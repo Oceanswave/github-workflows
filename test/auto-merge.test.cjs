@@ -5,7 +5,7 @@ const sha = 'a'.repeat(40);
 const pull = {
   number: 7, node_id: 'PR_test', state: 'open', merged: false, draft: false,
   base: { ref: 'main', repo: { full_name: 'Oceanswave/test' } },
-  head: { sha, repo: { full_name: 'Oceanswave/test' } },
+  head: { sha, ref: 'feature', repo: { full_name: 'Oceanswave/test' } },
   requested_reviewers: [], requested_teams: [], labels: [{ name: 'automerge' }],
   user: { login: 'Oceanswave' }, mergeable: true, mergeable_state: 'clean', auto_merge: null,
 };
@@ -22,6 +22,8 @@ function harness(options = {}) {
         merge: async args => { calls.push(['merge', args]); if (options.mergeError) throw options.mergeError; return { data: options.mergeResponse || { merged: true } }; },
       },
       actions: { getWorkflowRun: async () => ({ data: options.run }) },
+      repos: { get: async () => ({ data: { default_branch: 'main', delete_branch_on_merge: !!options.deleteBranchOnMerge } }) },
+      git: { deleteRef: async args => { calls.push(['deleteRef', args]); if (options.deleteError) throw options.deleteError; return {}; } },
     },
     paginate: async (method, args) => method(args),
     graphql: async (query, args) => {
@@ -42,7 +44,9 @@ function harness(options = {}) {
     },
   };
   const config = { hasExplicitToken: true, pullNumber: '7', expectedHead: sha, requiredChecks: JSON.stringify([{ name: 'verify', appId: 15368 }]), allowProtectedMerge: false, ...options.config };
-  return { calls, github, run: () => autoMerge({ github, policyGithub: options.policyGithub, context: { repo: { owner: 'Oceanswave', repo: 'test' }, runId: 42 }, core: { notice() {} }, config }) };
+  const sleeps = [];
+  const sleep = async ms => { sleeps.push(ms); };
+  return { calls, github, sleeps, run: () => autoMerge({ github, policyGithub: options.policyGithub, context: { repo: { owner: 'Oceanswave', repo: 'test' }, runId: 42 }, core: { notice() {}, info() {}, warning() {} }, config, sleep }) };
 }
 const noWrites = calls => assert.equal(calls.filter(item => item === 'enable' || item === 'disable' || Array.isArray(item)).length, 0);
 for (const [name, change] of [
@@ -157,3 +161,41 @@ test('GraphQL permission failures report the exact safe policy field path', asyn
   await assert.rejects(h.run(), error => error.message.includes('statusCheckRollup') && error.message.includes('FORBIDDEN'));
   noWrites(h.calls);
 });
+
+test('Re-read a merge state GitHub is still computing, then merge', async () => {
+  const h = harness({ reads: [{ ...pull, mergeable: null, mergeable_state: 'unknown' }, { ...pull, mergeable_state: 'blocked' }, pull, pull] });
+  const result = await h.run();
+  assert.equal(result.outcome, 'merged');
+  assert.deepEqual(h.sleeps, [5000, 10000]);
+  assert.equal(h.calls.filter(call => call === 'get').length, 4);
+});
+test('Hold a merge state that never settles after bounded retries', async () => {
+  const h = harness({ pull: { ...pull, mergeable_state: 'blocked' } });
+  assert.deepEqual(await h.run(), { outcome: 'held', reason: 'GitHub reports unmet merge requirements' });
+  assert.deepEqual(h.sleeps, [5000, 10000, 15000, 20000]);
+  noWrites(h.calls);
+});
+test('Hold merge conflicts immediately without retrying', async () => {
+  const h = harness({ pull: { ...pull, mergeable: false, mergeable_state: 'dirty' } });
+  assert.equal((await h.run()).outcome, 'held');
+  assert.deepEqual(h.sleeps, []); noWrites(h.calls);
+});
+test('Delete the merged head branch when the repository setting asks for it', async () => {
+  const h = harness({ deleteBranchOnMerge: true });
+  const result = await h.run();
+  assert.equal(result.outcome, 'merged'); assert.equal(result.branchDeleted, true);
+  assert.deepEqual(h.calls.find(call => Array.isArray(call) && call[0] === 'deleteRef')[1], { owner: 'Oceanswave', repo: 'test', ref: 'heads/feature' });
+});
+test('Keep the head branch when the repository setting is off', async () => {
+  const h = harness();
+  assert.equal((await h.run()).branchDeleted, false);
+  assert.equal(h.calls.some(call => Array.isArray(call) && call[0] === 'deleteRef'), false);
+});
+for (const [name, error, logged] of [['already deleted', Object.assign(new Error('Reference does not exist'), { status: 422 }), false],
+                                    ['denied', Object.assign(new Error('Resource not accessible'), { status: 403 }), true]]) {
+  test(`A branch deletion failure (${name}) never fails a completed merge`, async () => {
+    const h = harness({ deleteBranchOnMerge: true, deleteError: error });
+    const result = await h.run();
+    assert.equal(result.outcome, 'merged'); assert.equal(result.branchDeleted, false);
+  });
+}

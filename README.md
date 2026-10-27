@@ -46,9 +46,17 @@ from the configured app is additionally accepted; failures, pending checks,
 missing checks and app mismatches still hold. Keep the classifier/safety check
 strictly required and review each conditional-check exception in the caller.
 
+GitHub computes mergeability asynchronously, so a PR can briefly read as
+`unknown` or `blocked` right after CI completes. The helper re-reads such a state up
+to four times with a growing delay (5, 10, 15 and 20 seconds) before holding. Other
+states, such as merge conflicts, hold immediately.
+
 Eligible PRs are rechecked and squash-merged through GitHub's ordinary REST
 endpoint with the exact verified head SHA. No persistent auto-merge request is
-armed. Closed or merged PRs skip; an API failure is suppressed only after an
+armed. GitHub's `delete_branch_on_merge` does not fire for merges made with an
+Actions token, so after a successful merge the helper deletes the same-repository
+head branch itself when the repository has that setting on (the caller's existing
+`contents: write` covers it). A deletion failure is logged and never fails the merge. Closed or merged PRs skip; an API failure is suppressed only after an
 authoritative reread confirms a terminal state. GitHub protections remain the
 final merge boundary. Callers schedule fresh attempts after relevant CI/review
 events. There is no atomic API transaction spanning reviews/checks and merge;

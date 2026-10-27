@@ -82,7 +82,13 @@ jobs:
             
             // This exact module is embedded into the reusable workflow. Never load caller
             // code, artifacts, dependencies, or caches in the privileged controller.
-            async function autoMerge({ github, policyGithub = github, context, core, config }) {
+            // GitHub computes mergeability asynchronously, so right after CI completes a PR can briefly
+            // read as unknown or blocked. Re-read with a short backoff before holding on merge state.
+            const MERGE_STATE_RETRIES = 4;
+            const MERGE_STATE_DELAY_MS = 5000;
+            const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+            
+            async function autoMerge({ github, policyGithub = github, context, core, config, sleep = delay }) {
               const { owner, repo } = context.repo;
               const repository = `${owner}/${repo}`;
               const hold = reason => { core.notice(`Held: ${reason}`); return { outcome: 'held', reason }; };
@@ -136,7 +142,11 @@ jobs:
                 if (config.requiredLabel && !pull.labels?.some(label => label.name === config.requiredLabel)) return hold('required label is absent');
                 if (config.excludeDependabot && pull.user?.login === 'dependabot[bot]') return hold('Dependabot belongs to its separate validator');
                 if (config.requireDependabot && (pull.user?.login !== 'dependabot[bot]' || pull.user?.id !== 49699333 || pull.user?.type !== 'Bot')) return hold('Dependabot identity does not match');
-                if (pull.mergeable !== true || !['clean', 'unstable', 'has_hooks'].includes(pull.mergeable_state)) return hold('GitHub reports unmet merge requirements');
+                if (pull.mergeable !== true || !['clean', 'unstable', 'has_hooks'].includes(pull.mergeable_state)) {
+                  const settling = pull.mergeable === null || ['unknown', 'blocked'].includes(pull.mergeable_state);
+                  const reason = 'GitHub reports unmet merge requirements';
+                  return settling ? { outcome: 'held', reason, settling } : hold(reason);
+                }
                 const reviews = await policyGithub.paginate(policyGithub.rest.pulls.listReviews, { owner, repo, pull_number: Number(number), per_page: 100 });
                 const latest = new Map();
                 for (const review of reviews) {
@@ -195,27 +205,52 @@ jobs:
                 }
                 return { outcome: 'eligible' };
               };
-              let pull = await getPull();
-              let result = await inspect(pull);
+              // Read and inspect, re-reading while GitHub may still be settling the merge state.
+              const settle = async () => {
+                for (let attempt = 1; ; attempt++) {
+                  const pull = await getPull();
+                  const { settling, ...result } = await inspect(pull);
+                  if (!settling) return { pull, result };
+                  if (attempt > MERGE_STATE_RETRIES) return { pull, result: hold(result.reason) };
+                  core.info(`Merge state ${pull.mergeable_state ?? 'not computed'}; re-reading (${attempt}/${MERGE_STATE_RETRIES}).`);
+                  await sleep(MERGE_STATE_DELAY_MS * attempt);
+                }
+              };
+              let { pull, result } = await settle();
               if (result.outcome !== 'eligible') return result;
               if (config.dryRun) return { outcome: 'eligible', number: pull.number };
               const head = pull.head.sha;
               expectedHead = expectedHead || head;
               // Re-read every mutable hold and current-head check immediately before write.
-              pull = await getPull();
-              result = await inspect(pull);
+              ({ pull, result } = await settle());
               if (result.outcome !== 'eligible') return result;
               try {
                 const { data: merged } = await github.rest.pulls.merge({
                   owner, repo, pull_number: Number(number), merge_method: 'squash', sha: head,
                 });
                 if (!merged.merged) throw new Error(merged.message || 'GitHub refused the protected merge.');
-                return { outcome: 'merged', number: Number(number), sha: merged.sha };
+                return { outcome: 'merged', number: Number(number), sha: merged.sha, branchDeleted: await deleteBranch(pull) };
               } catch (error) {
                 // Error strings never establish success. Confirm terminal state after races.
                 const current = await getPull();
                 if (terminal(current)) return finish(current);
                 throw error;
+              }
+            
+              // GitHub's delete_branch_on_merge does not fire for merges made with an Actions token,
+              // so honor the repository setting here. The merge already succeeded: never fail on this.
+              async function deleteBranch(merged) {
+                try {
+                  const { data: settings } = await policyGithub.rest.repos.get({ owner, repo });
+                  const ref = merged.head?.ref;
+                  if (!settings.delete_branch_on_merge || !ref || ref === settings.default_branch) return false;
+                  await github.rest.git.deleteRef({ owner, repo, ref: `heads/${ref}` });
+                  return true;
+                } catch (error) {
+                  if (error.status === 422 || error.status === 404) return false;  // already gone
+                  core.warning(`Merged, but the head branch was not deleted: ${error.message}`);
+                  return false;
+                }
               }
             }
             
