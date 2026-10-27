@@ -83,7 +83,7 @@ jobs:
   merge:
     name: Shared auto-merge
     runs-on: \${{ fromJSON(inputs.runs-on) }}
-    timeout-minutes: 20
+    timeout-minutes: \${{ inputs.pending-wait-seconds > 0 && 20 || 5 }}
     outputs:
       outcome: \${{ steps.merge.outputs.outcome }}
       number: \${{ steps.merge.outputs.number }}
